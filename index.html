@@ -1,0 +1,510 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="description" content="ジャンル・テーマ・気持ちを入れると、AIが約3分の曲を作詞・作曲し、歌詞の声と映像演出まで仕上げるWebアプリ">
+<title>うたつくる｜AIで作詞・作曲・ステージ演出</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Shippori+Mincho+B1:wght@600;800&family=Zen+Kaku+Gothic+New:wght@400;500;700&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#EDF0F6; --surface:#FFFFFF; --surface-2:#F5F7FB; --ink:#18203A; --muted:#58627A; --line:#D3D9E5;
+  --beni:#B3205A; --beni-ink:#FFFFFF; --beni-soft:#F8E4EC; --seiji:#25756F; --kin:#E3A72F; --stage:#12172E; --danger:#B42318;
+  --f-body:"Zen Kaku Gothic New","Hiragino Sans","Yu Gothic UI","Meiryo",sans-serif;
+  --f-disp:"Shippori Mincho B1","Hiragino Mincho ProN","Yu Mincho",serif;
+  --r-s:6px; --r-m:10px; --r-l:18px;
+  color-scheme:light;
+  box-sizing:border-box;
+  padding-top:env(safe-area-inset-top,0px); padding-bottom:env(safe-area-inset-bottom,0px);
+}
+@media (prefers-color-scheme:dark){
+  :root{ --bg:#0F1326; --surface:#181E38; --surface-2:#1E2546; --ink:#E9ECF5; --muted:#A2AAC2; --line:#2E3762;
+    --beni:#E2588C; --beni-ink:#1A0B12; --beni-soft:#3A1B2C; --seiji:#62C2BA; color-scheme:dark; }
+}
+*,*::before,*::after{box-sizing:inherit}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+html,body{margin:0}
+body{background:var(--bg);color:var(--ink);font-family:var(--f-body);font-size:16px;line-height:1.7;-webkit-text-size-adjust:100%}
+[hidden]{display:none!important}
+a{color:var(--seiji)}
+h1,h2,h3{line-height:1.3;margin:0}
+p{margin:0}
+:focus-visible{outline:3px solid var(--kin);outline-offset:2px}
+.muted{color:var(--muted)}
+.small{font-size:.86rem}
+.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+
+/* ボタン */
+.btn{appearance:none;border:1px solid var(--line);background:var(--surface);color:var(--ink);font:inherit;font-weight:700;
+  padding:.6em 1.1em;border-radius:999px;cursor:pointer;display:inline-flex;align-items:center;gap:.5em;line-height:1.3;min-height:44px}
+.btn:hover{border-color:var(--ink)}
+.btn:disabled{opacity:.55;cursor:not-allowed}
+.btn.primary{background:var(--beni);border-color:var(--beni);color:var(--beni-ink)}
+.btn.primary:hover{filter:brightness(1.08)}
+.btn.ghost{background:transparent}
+.btn.big{font-size:1.1rem;padding:.8em 1.8em}
+.btn.small{min-height:36px;padding:.35em .9em;font-size:.9rem}
+.link{background:none;border:0;color:var(--seiji);font:inherit;text-decoration:underline;cursor:pointer;padding:.3em 0}
+.spin{width:1em;height:1em;border:2px solid currentColor;border-right-color:transparent;border-radius:50%;display:inline-block;animation:spin .8s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+
+/* 入力 */
+.field{display:block;margin:0 0 1.1rem}
+.field>span,.legend{display:block;font-weight:700;margin-bottom:.35rem}
+.field small{display:block;color:var(--muted);font-size:.82rem;margin-top:.25rem}
+input[type=text],input[type=email],input[type=password],input[type=url],input[type=number],select,textarea{
+  width:100%;font:inherit;color:var(--ink);background:var(--surface-2);border:1px solid var(--line);border-radius:var(--r-m);padding:.65em .8em;min-height:46px}
+textarea{resize:vertical;min-height:96px;line-height:1.6}
+input:focus,select:focus,textarea:focus{border-color:var(--seiji);outline:none;box-shadow:0 0 0 3px color-mix(in srgb,var(--seiji) 25%,transparent)}
+.pw{position:relative}
+.pw input{padding-right:3.2em}
+.eye{position:absolute;right:.35em;top:50%;transform:translateY(-50%);width:40px;height:40px;border:0;background:none;color:var(--muted);cursor:pointer;border-radius:50%;display:grid;place-items:center}
+.eye svg{width:22px;height:22px}
+.with-mic{display:flex;gap:.5rem;align-items:flex-start}
+.with-mic>input,.with-mic>textarea{flex:1}
+.mic{flex:none;width:46px;height:46px;border-radius:50%;border:1px solid var(--line);background:var(--surface);color:var(--ink);cursor:pointer;display:grid;place-items:center;position:relative}
+.mic svg{width:22px;height:22px}
+.mic.rec{background:var(--beni);border-color:var(--beni);color:var(--beni-ink)}
+.mic.rec::after{content:attr(data-left);position:absolute;right:-6px;top:-6px;background:var(--ink);color:var(--surface);font-size:.7rem;border-radius:999px;min-width:20px;height:20px;display:grid;place-items:center;padding:0 4px}
+.mic.rec{animation:pulse 1.4s ease-in-out infinite}
+@keyframes pulse{50%{box-shadow:0 0 0 8px color-mix(in srgb,var(--beni) 25%,transparent)}}
+
+/* ジャンルの札 */
+.chips{display:flex;flex-wrap:wrap;gap:.45rem;margin-bottom:.6rem}
+.chip{position:relative}
+.chip input{position:absolute;opacity:0;inset:0}
+.chip span{display:inline-block;padding:.38em .9em;border:1px solid var(--line);border-radius:999px;background:var(--surface);cursor:pointer;font-size:.95rem}
+.chip input:checked+span{background:var(--ink);color:var(--surface);border-color:var(--ink)}
+.chip input:focus-visible+span{outline:3px solid var(--kin);outline-offset:2px}
+
+/* ログイン画面 */
+.auth{min-height:100vh;display:grid;grid-template-columns:1fr;gap:0}
+@media (min-width:900px){.auth{grid-template-columns:1.1fr 1fr}}
+.auth-brand{position:relative;padding:3rem 1.5rem 2rem;background:var(--stage);color:#F3F1FA;overflow:hidden;display:flex;flex-direction:column;justify-content:center}
+.staff{position:absolute;inset:0;pointer-events:none;
+  background:repeating-linear-gradient(to bottom,transparent 0 22px,rgba(227,167,47,.28) 22px 23px,transparent 23px 34px);
+  -webkit-mask:linear-gradient(to bottom,transparent 18%,#000 30%,#000 62%,transparent 74%);mask:linear-gradient(to bottom,transparent 18%,#000 30%,#000 62%,transparent 74%)}
+.brand-big{position:relative;font-family:var(--f-disp);font-weight:800;font-size:clamp(3.2rem,11vw,6.8rem);letter-spacing:.06em;line-height:1.05}
+@media (min-width:900px){
+  .auth-brand{flex-direction:row;align-items:center;gap:2.5rem;padding:4rem}
+  .brand-big{writing-mode:vertical-rl;font-size:clamp(4.5rem,8vw,7.5rem)}
+}
+.brand-sub{position:relative;max-width:30em;margin-top:1.2rem;color:#C9CDE0;font-size:1.02rem}
+.auth-side{padding:2rem 1.25rem 3rem;display:flex;flex-direction:column;justify-content:center;align-items:center}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:var(--r-l);padding:1.4rem}
+.auth-card{width:100%;max-width:440px}
+.seg{display:flex;gap:.25rem;background:var(--surface-2);border:1px solid var(--line);border-radius:999px;padding:.25rem;margin-bottom:1.4rem}
+.seg button{flex:1;border:0;background:none;font:inherit;font-size:.9rem;font-weight:700;color:var(--muted);padding:.55em .4em;border-radius:999px;cursor:pointer;min-height:40px}
+.seg button[aria-selected=true]{background:var(--surface);color:var(--ink);box-shadow:0 1px 0 var(--line)}
+.terms{max-height:12rem;overflow:auto;background:var(--surface-2);border:1px solid var(--line);border-radius:var(--r-m);padding:.8rem 1rem;font-size:.86rem;margin-bottom:.8rem}
+.terms ul{margin:.3rem 0 0;padding-left:1.1rem}
+.agree{display:flex;flex-direction:column;gap:.35rem;margin-bottom:1rem}
+.agree label{display:flex;gap:.55rem;align-items:flex-start;font-size:.92rem;cursor:pointer}
+.agree input{width:20px;height:20px;margin-top:.2rem;accent-color:var(--beni);flex:none}
+.auth-foot{margin-top:1rem;display:flex;justify-content:space-between;align-items:center;width:100%;max-width:440px;font-size:.85rem;color:var(--muted)}
+
+/* アプリ本体 */
+.topbar{position:sticky;top:env(safe-area-inset-top,0px);z-index:20;background:var(--surface);border-bottom:1px solid var(--line)}
+body::before{content:"";position:fixed;inset:0 0 auto;height:env(safe-area-inset-top,0px);z-index:21;background:var(--surface)}
+.topbar-in{max-width:1100px;margin:0 auto;display:flex;align-items:center;gap:.75rem;padding:.55rem 1rem;flex-wrap:wrap}
+.logo{font-family:var(--f-disp);font-weight:800;font-size:1.45rem;letter-spacing:.05em;margin-right:auto}
+.who{font-size:.9rem;color:var(--muted)}
+.nav{max-width:1100px;margin:0 auto;display:flex;gap:.25rem;padding:0 1rem;overflow-x:auto}
+.nav button{border:0;background:none;font:inherit;font-weight:700;color:var(--muted);padding:.7em 1em;border-bottom:3px solid transparent;cursor:pointer;white-space:nowrap}
+.nav button[aria-current=page]{color:var(--ink);border-bottom-color:var(--beni)}
+main{max-width:1100px;margin:0 auto;padding:1.5rem 1rem 4rem}
+.panel h2.h{font-family:var(--f-disp);font-size:1.6rem;margin-bottom:1rem}
+
+.create{display:grid;gap:0 1.5rem}
+@media (min-width:860px){.create{grid-template-columns:1fr 1fr}.create .wide{grid-column:1/-1}}
+.voice-note{font-size:.8rem;color:var(--muted)}
+.gen-row{display:flex;flex-wrap:wrap;align-items:center;gap:1rem}
+
+.progress{list-style:none;margin:1.5rem 0;padding:0;display:flex;gap:.5rem;flex-wrap:wrap;counter-reset:st}
+.progress li{counter-increment:st;display:flex;align-items:center;gap:.5rem;padding:.45em .9em .45em .5em;border-radius:999px;background:var(--surface);border:1px solid var(--line);color:var(--muted);font-weight:700;font-size:.92rem}
+.progress li::before{content:counter(st);width:1.6em;height:1.6em;border-radius:50%;display:grid;place-items:center;background:var(--surface-2);font-size:.85em}
+.progress li.doing{color:var(--ink);border-color:var(--beni)}
+.progress li.doing::before{background:var(--beni);color:var(--beni-ink);animation:pulse 1.4s infinite}
+.progress li.done{color:var(--ink)}
+.progress li.done::before{content:"✓";background:var(--seiji);color:#fff}
+.progress li.err{border-color:var(--danger);color:var(--danger)}
+
+/* 生成結果 */
+.song-head{margin:2rem 0 1.2rem}
+.song-title{font-family:var(--f-disp);font-weight:800;font-size:clamp(2rem,5vw,3.2rem);letter-spacing:.03em}
+.song-concept{margin-top:.4rem;color:var(--muted);max-width:42em}
+.facts{list-style:none;padding:0;margin:1rem 0;display:flex;flex-wrap:wrap;gap:.4rem 1.4rem;font-size:.92rem;color:var(--muted)}
+.facts b{color:var(--ink);font-weight:700;margin-left:.3em}
+.actions{display:flex;flex-wrap:wrap;gap:.5rem}
+.secs{display:grid;gap:.9rem;margin-top:1.4rem}
+.sec{background:var(--surface);border:1px solid var(--line);border-left:5px solid var(--muted);border-radius:var(--r-m);padding:.9rem 1rem}
+.sec.k-chorus{border-left-color:var(--beni)}
+.sec.k-verse{border-left-color:var(--seiji)}
+.sec.k-pre{border-left-color:color-mix(in srgb,var(--seiji) 55%,var(--beni))}
+.sec.k-bridge{border-left-color:var(--kin)}
+.sec header{display:flex;align-items:baseline;gap:.8rem;margin-bottom:.5rem}
+.sec h3{font-size:1.05rem}
+.sec .bars{font-size:.82rem;color:var(--muted)}
+.chordrow{display:grid;grid-template-columns:repeat(auto-fill,minmax(64px,1fr));gap:2px;margin-bottom:.6rem;font-variant-numeric:tabular-nums}
+.chordrow span{background:var(--surface-2);padding:.2em .45em;font-size:.85rem;border-radius:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sec textarea{min-height:72px;font-family:var(--f-disp);font-size:1.02rem}
+
+/* ステージ */
+.stage{position:relative;aspect-ratio:16/9;background:var(--stage);color:#fff;border-radius:var(--r-l);overflow:hidden;isolation:isolate}
+.stage-bg{position:absolute;inset:0;z-index:0}
+.stage-bg img,.stage-bg video{width:100%;height:100%;object-fit:cover;display:block}
+#stageCanvas{position:absolute;inset:0;width:100%;height:100%;z-index:1}
+.stage-text{position:absolute;inset:0;z-index:2;display:flex;flex-direction:column;justify-content:flex-end;padding:clamp(1rem,4vw,2.6rem);text-align:center;pointer-events:none}
+.st-title{position:absolute;inset:0;display:grid;place-items:center;font-family:var(--f-disp);font-weight:800;font-size:clamp(1.8rem,6vw,4.4rem);letter-spacing:.05em;padding:1rem;transition:opacity .8s;filter:drop-shadow(0 3px 12px rgba(0,0,0,.6))}
+.st-section{font-size:clamp(.75rem,1.6vw,.95rem);color:var(--kin);margin-bottom:.5rem;font-weight:700;letter-spacing:.08em}
+.st-line{font-family:var(--f-disp);margin:0;min-height:1.4em;line-height:1.4}
+.st-line.prev,.st-line.next{font-size:clamp(.85rem,2vw,1.3rem);color:rgba(255,255,255,.58);font-weight:600}
+.st-line.now{font-size:clamp(1.25rem,3.8vw,2.7rem);font-weight:800;margin:.25em 0;
+  background:linear-gradient(90deg,var(--kin) 0 calc(var(--p,0)*100%),#FFFFFF calc(var(--p,0)*100%) 100%);
+  -webkit-background-clip:text;background-clip:text;color:transparent;filter:drop-shadow(0 2px 6px rgba(0,0,0,.65))}
+.stage-fs{position:absolute;right:.7rem;top:.7rem;z-index:3;width:42px;height:42px;border-radius:50%;border:1px solid rgba(255,255,255,.3);background:rgba(18,23,46,.55);color:#fff;cursor:pointer;display:grid;place-items:center}
+.stage-fs svg{width:20px;height:20px}
+.stage:fullscreen{border-radius:0;aspect-ratio:auto;width:100%;height:100%}
+.stage.pseudo-fs{position:fixed;inset:0;z-index:1000;border-radius:0;aspect-ratio:auto}
+.transport{display:flex;align-items:center;gap:.8rem;margin:1rem 0;flex-wrap:wrap}
+.playbtn{width:60px;height:60px;border-radius:50%;border:0;background:var(--beni);color:var(--beni-ink);cursor:pointer;display:grid;place-items:center;flex:none}
+.playbtn svg{width:26px;height:26px}
+.seek{flex:1;min-width:180px;display:flex;align-items:center;gap:.6rem;font-variant-numeric:tabular-nums;font-size:.9rem}
+.seek input{flex:1;accent-color:var(--beni)}
+.stage-grid{display:grid;gap:1rem;grid-template-columns:1fr}
+@media (min-width:760px){.stage-grid{grid-template-columns:1fr 1fr}}
+.stage-grid h3,.scenes h3{font-size:1.02rem;margin-bottom:.6rem}
+.toggles{display:flex;flex-wrap:wrap;gap:.4rem .9rem}
+.toggles label{display:flex;align-items:center;gap:.4rem;cursor:pointer}
+.toggles input{width:18px;height:18px;accent-color:var(--seiji)}
+.radios{display:flex;flex-wrap:wrap;gap:.4rem 1rem;margin-bottom:.6rem}
+.radios label{display:flex;align-items:center;gap:.35rem;cursor:pointer}
+.media-list{display:flex;flex-direction:column;gap:.3rem;margin:.6rem 0;max-height:12rem;overflow:auto}
+.media-list button{text-align:left;border:1px solid var(--line);background:var(--surface-2);color:var(--ink);font:inherit;font-size:.9rem;padding:.45em .7em;border-radius:var(--r-s);cursor:pointer}
+.scenes{margin-top:1rem}
+.table-wrap{overflow-x:auto}
+table{border-collapse:collapse;width:100%;font-size:.88rem;min-width:720px}
+th,td{text-align:left;padding:.5em .6em;border-bottom:1px solid var(--line);vertical-align:top}
+th{font-weight:700;color:var(--muted);white-space:nowrap}
+td.num{font-variant-numeric:tabular-nums;white-space:nowrap}
+.status{font-size:.88rem;color:var(--muted);margin-top:.5rem;min-height:1.4em}
+
+/* マイソング */
+.songlist{display:grid;gap:.6rem}
+.songrow{display:flex;align-items:center;gap:1rem;background:var(--surface);border:1px solid var(--line);border-radius:var(--r-m);padding:.8rem 1rem;flex-wrap:wrap}
+.songrow .t{font-family:var(--f-disp);font-weight:800;font-size:1.15rem}
+.songrow .m{font-size:.85rem;color:var(--muted)}
+.songrow .grow{flex:1;min-width:12rem}
+.empty{text-align:center;padding:3rem 1rem;color:var(--muted)}
+.empty p{margin-bottom:1rem}
+
+/* モーダル */
+dialog.modal{border:1px solid var(--line);border-radius:var(--r-l);padding:0;width:min(640px,calc(100vw - 2rem));max-height:calc(100vh - 2rem);background:var(--surface);color:var(--ink)}
+dialog.modal::backdrop{background:rgba(10,12,30,.55)}
+.modal-in{padding:1.4rem 1.4rem 1.2rem;overflow:auto;max-height:calc(100vh - 2rem)}
+.modal-head{display:flex;align-items:center;justify-content:space-between;gap:1rem;margin-bottom:1rem}
+.modal-head h2{font-family:var(--f-disp);font-size:1.4rem}
+.x{width:40px;height:40px;border-radius:50%;border:1px solid var(--line);background:var(--surface);color:var(--ink);cursor:pointer;font-size:1.2rem}
+.guide ol{padding-left:1.3rem;margin:0 0 1rem}
+.guide li{margin-bottom:.55rem}
+.guide details{border-top:1px solid var(--line);padding:.6rem 0}
+.guide summary{cursor:pointer;font-weight:700}
+.guide details p{margin-top:.4rem;color:var(--muted);font-size:.93rem}
+.note{background:var(--beni-soft);border-radius:var(--r-m);padding:.7rem .9rem;font-size:.9rem;margin-bottom:1rem}
+.row-btns{display:flex;flex-wrap:wrap;gap:.5rem;justify-content:flex-end;margin-top:.6rem}
+
+#toast{position:fixed;left:50%;bottom:calc(1.2rem + env(safe-area-inset-bottom,0px));transform:translate(-50%,150%);background:var(--ink);color:var(--surface);padding:.75em 1.2em;border-radius:var(--r-m);max-width:min(92vw,560px);z-index:2000;transition:transform .25s;font-size:.95rem}
+#toast.show{transform:translate(-50%,0)}
+#toast.error{background:var(--danger);color:#fff}
+#toast.ok{background:var(--seiji);color:#fff}
+footer{text-align:center;padding:1.5rem 1rem 2rem;font-size:.8rem;color:var(--muted)}
+
+@media (prefers-reduced-motion:reduce){
+  *,*::before,*::after{animation:none!important;transition:none!important}
+}
+</style>
+</head>
+<body>
+<div id="toast" role="status" aria-live="polite"></div>
+
+<!-- ===== ログイン画面 ===== -->
+<section id="authView" class="auth" hidden>
+  <div class="auth-brand">
+    <div class="staff" aria-hidden="true"></div>
+    <h1 class="brand-big">うたつくる</h1>
+    <p class="brand-sub">ジャンルとテーマ、届けたい気持ちを入れるだけ。AIが約3分の曲を作詞・作曲して、歌詞の声と映像演出までひとつのステージに仕上げます。</p>
+  </div>
+  <div class="auth-side">
+    <div class="card auth-card">
+      <div class="seg" role="tablist" aria-label="ログインと登録">
+        <button type="button" role="tab" data-auth="login" aria-selected="true">ログイン</button>
+        <button type="button" role="tab" data-auth="register" aria-selected="false">新規登録</button>
+        <button type="button" role="tab" data-auth="forgot" aria-selected="false">パスワードを忘れた</button>
+      </div>
+
+      <form id="formLogin" data-authpane="login" novalidate>
+        <label class="field"><span>メールアドレス</span><input type="email" id="loginEmail" autocomplete="email" required></label>
+        <label class="field"><span>パスワード</span>
+          <div class="pw"><input type="password" id="loginPw" autocomplete="current-password" required><button type="button" class="eye" data-eye></button></div>
+        </label>
+        <button class="btn primary big" id="btnLogin" type="submit" style="width:100%;justify-content:center">ログイン</button>
+      </form>
+
+      <form id="formRegister" data-authpane="register" novalidate hidden>
+        <label class="field"><span>ニックネーム</span><input type="text" id="regNick" maxlength="20" autocomplete="nickname" required><small>20文字まで。画面に表示されます。</small></label>
+        <label class="field"><span>メールアドレス</span><input type="email" id="regEmail" autocomplete="email" required><small>仮パスワードをこのアドレスに送ります。</small></label>
+        <div class="terms" tabindex="0" aria-label="注意事項と免責事項">
+          <strong>注意事項・免責事項</strong>
+          <ul>
+            <li>本サービスは個人が運営する無料の試験的サービスです。予告なく内容の変更・停止を行うことがあります。</li>
+            <li>AIが作る歌詞・メロディ・音声・映像案について、正確さや独自性、他者の権利を侵害しないことは保証しません。公開・配信・商用で使う前にご自身で確認してください。</li>
+            <li>入力した内容は生成のため Google の Gemini API に送信されます。個人情報や人に知られたくない情報は入力しないでください。</li>
+            <li>本サービスの利用により生じた損害について、運営者は責任を負いません。ご自身の責任でご利用ください。</li>
+            <li>利用者同士や第三者との間で生じた問題は、当事者間で解決してください。</li>
+          </ul>
+        </div>
+        <div class="agree">
+          <label><input type="checkbox" data-agree> 注意事項を読みました</label>
+          <label><input type="checkbox" data-agree> 免責事項に同意します</label>
+          <label><input type="checkbox" data-agree> 自分の責任で利用します</label>
+          <label><input type="checkbox" data-agree> 利用者間・第三者とのトラブルは当事者間で解決します</label>
+        </div>
+        <button class="btn primary big" id="btnRegister" type="submit" disabled style="width:100%;justify-content:center">登録して仮パスワードを受け取る</button>
+      </form>
+
+      <form id="formForgot" data-authpane="forgot" novalidate hidden>
+        <p class="small muted" style="margin-bottom:1rem">登録したメールアドレスに、新しい仮パスワードを送ります。ログイン後に新しいパスワードへ変更してください。</p>
+        <label class="field"><span>メールアドレス</span><input type="email" id="forgotEmail" autocomplete="email" required></label>
+        <button class="btn primary big" id="btnForgot" type="submit" style="width:100%;justify-content:center">仮パスワードを再発行</button>
+      </form>
+    </div>
+    <div class="auth-foot">
+      <span><button type="button" class="link" data-open="modalGuide">使い方</button>　<button type="button" class="link" data-open="modalSettings">設定</button></span>
+      <span class="app-version"></span>
+    </div>
+  </div>
+</section>
+
+<!-- ===== アプリ本体 ===== -->
+<div id="appView" hidden>
+  <header class="topbar">
+    <div class="topbar-in">
+      <span class="logo">うたつくる</span>
+      <span class="who" id="userName"></span>
+      <button type="button" class="btn ghost small" data-open="modalGuide">使い方</button>
+      <button type="button" class="btn ghost small" data-open="modalSettings">設定</button>
+      <button type="button" class="btn ghost small" id="btnLogout">ログアウト</button>
+    </div>
+    <nav class="nav" aria-label="メインメニュー">
+      <button type="button" data-nav="create" aria-current="page">つくる</button>
+      <button type="button" data-nav="stage" aria-current="false">ステージ</button>
+      <button type="button" data-nav="songs" aria-current="false">マイソング</button>
+    </nav>
+  </header>
+
+  <main>
+    <!-- つくる -->
+    <section id="panel-create" class="panel">
+      <form id="formCreate" class="card create" novalidate>
+        <fieldset class="wide" style="border:0;padding:0;margin:0 0 1.1rem">
+          <legend class="legend">ジャンル</legend>
+          <div class="chips" id="genreChips"></div>
+          <input type="text" id="genreFree" placeholder="一覧にないジャンルはここに入力（例：ボサノバ、演歌）" maxlength="40" aria-label="その他のジャンル">
+        </fieldset>
+        <label class="field"><span>テーマ</span>
+          <div class="with-mic"><input type="text" id="inTheme" maxlength="200" placeholder="例：60歳からの再出発、海辺の夏祭り"><button type="button" class="mic" data-mic="inTheme" aria-label="テーマを音声で入力" aria-pressed="false"></button></div>
+        </label>
+        <label class="field"><span>声のイメージ（どんな歌手風か）</span>
+          <div class="with-mic"><input type="text" id="inVoiceRef" maxlength="200" placeholder="例：ハスキーで温かい男性ボーカル風"><button type="button" class="mic" data-mic="inVoiceRef" aria-label="声のイメージを音声で入力" aria-pressed="false"></button></div>
+          <small class="voice-note">雰囲気の参考として使います。実在の歌手の声を再現するものではありません。</small>
+        </label>
+        <label class="field"><span>曲風（どんな曲のような感じか）</span>
+          <div class="with-mic"><input type="text" id="inSongRef" maxlength="200" placeholder="例：夕暮れに聴きたいゆったりしたバラード風"><button type="button" class="mic" data-mic="inSongRef" aria-label="曲風を音声で入力" aria-pressed="false"></button></div>
+        </label>
+        <label class="field"><span>読み上げの声</span>
+          <select id="inVoice"></select>
+          <small>歌詞の声とナレーションに使う声です（声の印象は目安です）。</small>
+        </label>
+        <label class="field wide"><span>歌詞にしたい気持ち</span>
+          <div class="with-mic"><textarea id="inFeel" maxlength="1000" rows="4" placeholder="例：仲間と過ごした日々への感謝と、これからも一緒に笑っていたいという気持ち"></textarea><button type="button" class="mic" data-mic="inFeel" aria-label="気持ちを音声で入力" aria-pressed="false"></button></div>
+        </label>
+        <div class="wide gen-row">
+          <button class="btn primary big" id="btnGenerate" type="submit">曲をつくる</button>
+          <span class="small muted">作詞・作曲・演出の順に仕上げます。1〜3分ほどかかります。</span>
+        </div>
+      </form>
+
+      <ol id="progress" class="progress" hidden aria-live="polite">
+        <li data-step="lyrics">作詞と構成</li>
+        <li data-step="music">作曲</li>
+        <li data-step="visual">演出とナレーション</li>
+      </ol>
+
+      <div id="result" hidden></div>
+    </section>
+
+    <!-- ステージ -->
+    <section id="panel-stage" class="panel" hidden>
+      <div id="stageEmpty" class="empty">
+        <p>まだ曲がありません。「つくる」で曲を作るか、マイソングから開いてください。</p>
+        <button type="button" class="btn primary" data-goto="create">曲をつくる</button>
+      </div>
+      <div id="stageWrap" hidden>
+        <div class="stage" id="stage">
+          <div class="stage-bg" id="stageBg"></div>
+          <canvas id="stageCanvas" aria-hidden="true"></canvas>
+          <div class="stage-text" aria-live="off">
+            <p class="st-title" id="stTitle"></p>
+            <p class="st-section" id="stSection"></p>
+            <p class="st-line prev" id="stPrev"></p>
+            <p class="st-line now" id="stNow"></p>
+            <p class="st-line next" id="stNext"></p>
+          </div>
+          <button type="button" class="stage-fs" id="btnFull" aria-label="全画面表示">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg>
+          </button>
+        </div>
+
+        <div class="transport">
+          <button type="button" class="playbtn" id="btnPlay" aria-label="再生"></button>
+          <button type="button" class="btn small" id="btnStop">最初に戻る</button>
+          <div class="seek"><span id="timeNow">0:00</span><input type="range" id="seek" min="0" max="180" step="0.1" value="0" aria-label="再生位置"><span id="timeDur">0:00</span></div>
+        </div>
+
+        <div class="stage-grid">
+          <div class="card">
+            <h3>ミックス</h3>
+            <div class="toggles">
+              <label><input type="checkbox" id="mixMelody" checked> メロディ</label>
+              <label><input type="checkbox" id="mixAccomp" checked> 伴奏</label>
+              <label><input type="checkbox" id="mixDrums" checked> リズム</label>
+              <label><input type="checkbox" id="mixVocal" checked> 歌詞の声</label>
+              <label><input type="checkbox" id="mixNarr" checked> ナレーション</label>
+            </div>
+            <p class="small muted" style="margin-top:.6rem">メロディは楽器の音で演奏し、歌詞はAIの声で語るように重ねます。</p>
+          </div>
+          <div class="card">
+            <h3>歌詞の声</h3>
+            <label class="field" style="margin-bottom:.7rem"><span class="sr">声の種類</span><select id="stVoice"></select></label>
+            <button type="button" class="btn primary" id="btnTts">歌詞の声をつくる</button>
+            <p class="status" id="ttsStatus"></p>
+          </div>
+          <div class="card">
+            <h3>書き出し</h3>
+            <div class="actions">
+              <button type="button" class="btn" id="btnWav">WAVで保存（高音質）</button>
+              <button type="button" class="btn" id="btnDrive">ドライブに保存</button>
+            </div>
+            <p class="status" id="exportStatus">再生を待たずに裏で高速に書き出します。</p>
+          </div>
+          <div class="card">
+            <h3>背景</h3>
+            <div class="radios" role="radiogroup" aria-label="背景の種類">
+              <label><input type="radio" name="bgMode" value="auto" checked> 自動演出</label>
+              <label><input type="radio" name="bgMode" value="local"> 端末の写真・動画</label>
+              <label><input type="radio" name="bgMode" value="drive"> ドライブの素材</label>
+            </div>
+            <div id="bgLocalBox" hidden>
+              <input type="file" id="bgFile" accept="image/*,video/*">
+              <p class="small muted">この端末で表示するだけで、保存はしません。</p>
+            </div>
+            <div id="bgDriveBox" hidden>
+              <div class="actions">
+                <button type="button" class="btn small" id="btnMediaRefresh">素材を読み込む</button>
+                <label class="btn small" style="cursor:pointer">画像を追加<input type="file" id="bgUpload" accept="image/png,image/jpeg,image/webp,image/gif" class="sr"></label>
+              </div>
+              <div class="media-list" id="mediaList"></div>
+              <p class="small muted"><a id="folderLink" href="#" target="_blank" rel="noopener" hidden>この曲のドライブフォルダを開く</a>　Google Earth Studio で書き出した動画（20MBまで）や画像をフォルダに入れると、ここに並びます。</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="card scenes">
+          <h3>Google Earth Studio 撮影指示</h3>
+          <p class="small muted" style="margin-bottom:.6rem">区間ごとの場所とカメラの動きです。Earth Studio で同じ秒数の映像を作り、ドライブのフォルダに入れると背景に使えます。</p>
+          <div class="table-wrap"><table>
+            <thead><tr><th>区間</th><th>時間</th><th>場所</th><th>映像のイメージ</th><th>カメラ</th><th>長さ</th><th>確認</th></tr></thead>
+            <tbody id="sceneBody"></tbody>
+          </table></div>
+          <div class="row-btns">
+            <a class="btn small" href="https://earth.google.com/studio/" target="_blank" rel="noopener">Earth Studio を開く</a>
+            <button type="button" class="btn small" id="btnCopyScenes">撮影指示をコピー</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- マイソング -->
+    <section id="panel-songs" class="panel" hidden>
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:1rem;margin-bottom:1rem">
+        <h2 class="h" style="margin:0">マイソング</h2>
+        <button type="button" class="btn small" id="btnSongsRefresh">更新</button>
+      </div>
+      <div id="songList" class="songlist"></div>
+    </section>
+  </main>
+  <footer>うたつくる <span class="app-version"></span></footer>
+</div>
+
+<!-- ===== 使い方 ===== -->
+<dialog class="modal" id="modalGuide" aria-labelledby="guideTitle">
+  <div class="modal-in guide">
+    <div class="modal-head"><h2 id="guideTitle">使い方</h2><button type="button" class="x" data-close aria-label="閉じる">×</button></div>
+    <ol>
+      <li><b>新規登録</b>：ニックネームとメールアドレスを入れ、注意事項に同意して登録します。仮パスワードがメールで届きます。</li>
+      <li><b>ログイン</b>：仮パスワードでログインすると、最初に新しいパスワードへの変更をお願いします。</li>
+      <li><b>つくる</b>：ジャンルを選び、テーマ・声のイメージ・曲風・歌詞にしたい気持ちを入れます。マイクのボタンで話して入力もできます。「曲をつくる」を押すと、作詞、作曲、演出の順にAIが仕上げます。</li>
+      <li><b>手直し</b>：できた歌詞はそのまま書き換えられます。「作曲をやり直す」「演出をやり直す」で一部だけ作り直せます。</li>
+      <li><b>ステージ</b>：再生すると歌詞がカラオケのように流れます。「歌詞の声をつくる」を押すと、AIの声が伴奏に重なります。右上のボタンで全画面表示になります。</li>
+      <li><b>背景</b>：自動演出のほか、端末の写真・動画や、Google Earth Studio で作った映像を使えます。撮影指示の表をコピーして Earth Studio での制作に使ってください。</li>
+      <li><b>保存</b>：「保存する」でマイソングに残ります。完成した音はWAVで書き出したり、ドライブに保存したりできます。</li>
+    </ol>
+    <details><summary>AIが本当に歌ってくれますか？</summary><p>メロディは楽器の音で演奏し、歌詞はAIの読み上げ音声で語るように重ねます。歌声の合成や、実在の歌手の声の再現はできません。</p></details>
+    <details><summary>音声入力が途中で止まってしまう</summary><p>言葉につまっても、無音が続くまでは聞き取りを続けます。止まるまでの秒数は「設定」で長くできます。話し終えたらもう一度マイクのボタンを押してください。</p></details>
+    <details><summary>パスワードを忘れました</summary><p>ログイン画面の「パスワードを忘れた」から仮パスワードを再発行できます。ログイン後に新しいパスワードへ変更してください。</p></details>
+    <details><summary>1日に何曲まで作れますか？</summary><p>運営者が設定した1日あたりの上限があります。上限に達したときは翌日にお試しください。</p></details>
+    <details><summary>作った曲を公開してもいいですか？</summary><p>AIの生成物が既存の作品に似てしまうこともあります。公開や配信の前に、ご自身で内容を確認してください。</p></details>
+  </div>
+</dialog>
+
+<!-- ===== 設定 ===== -->
+<dialog class="modal" id="modalSettings" aria-labelledby="setTitle">
+  <div class="modal-in">
+    <div class="modal-head"><h2 id="setTitle">設定</h2><button type="button" class="x" data-close aria-label="閉じる">×</button></div>
+    <label class="field"><span>サーバー（GAS）のURL</span><input type="url" id="setGasUrl" placeholder="https://script.google.com/macros/s/…/exec"><small id="setGasHint">空欄のときは config.js の値を使います。</small></label>
+    <div class="actions" style="margin-bottom:1rem"><button type="button" class="btn small" id="btnTestGas">接続を確認</button></div>
+    <p class="status" id="gasStatus"></p>
+    <label class="field"><span>音声入力が自動で止まるまでの無音の秒数</span><input type="number" id="setSilence" min="4" max="60" step="1"><small>言葉につまりやすい方は長めに（10〜20秒がおすすめ）。</small></label>
+    <div class="row-btns" style="justify-content:space-between">
+      <button type="button" class="btn small ghost" id="btnOpenPw">パスワードを変更する</button>
+      <span style="display:flex;gap:.5rem;flex-wrap:wrap">
+        <button type="button" class="btn small ghost" id="btnResetSettings">初期値に戻す</button>
+        <button type="button" class="btn small primary" id="btnSaveSettings">保存</button>
+      </span>
+    </div>
+    <p class="small muted" style="margin-top:1rem">アプリのバージョン <span class="app-version"></span>　<span id="serverVersion"></span></p>
+  </div>
+</dialog>
+
+<!-- ===== パスワード変更 ===== -->
+<dialog class="modal" id="modalPw" aria-labelledby="pwTitle">
+  <form class="modal-in" id="formPw" novalidate>
+    <div class="modal-head"><h2 id="pwTitle">パスワードの変更</h2><button type="button" class="x" data-close id="btnPwX" aria-label="閉じる">×</button></div>
+    <p class="note" id="pwForcedNote">仮パスワードでログインしました。続けるには新しいパスワードを設定してください。</p>
+    <label class="field"><span>今のパスワード（仮パスワード）</span><div class="pw"><input type="password" id="pwCurrent" autocomplete="current-password"><button type="button" class="eye" data-eye></button></div></label>
+    <label class="field"><span>新しいパスワード</span><div class="pw"><input type="password" id="pwNew" autocomplete="new-password"><button type="button" class="eye" data-eye></button></div><small>8文字以上で、英字と数字を両方含めてください。</small></label>
+    <label class="field"><span>新しいパスワード（確認）</span><div class="pw"><input type="password" id="pwNew2" autocomplete="new-password"><button type="button" class="eye" data-eye></button></div></label>
+    <div class="row-btns">
+      <button type="button" class="btn ghost" id="btnPwCancel" data-close>キャンセル</button>
+      <button type="submit" class="btn primary" id="btnPwSave">パスワードを変更</button>
+    </div>
+  </form>
+</dialog>
+
+<script src="config.js"></script>
+<script src="engine.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
