@@ -1,5 +1,6 @@
 /**
- * うたつくる（uta-tsukuru）バックエンド  code.gs  v1.0.0
+ * うたつくる（uta-tsukuru）バックエンド  code.gs  v1.1.0
+ * v1.1.0 Gemini消費の削減：1曲＝AI呼び出し1回（作曲はブラウザ内）、思考トークン停止、読み上げ音声のドライブキャッシュ
  * ------------------------------------------------------------
  * GitHub Pages のフロントエンドから POST（本文JSON、Content-Type: text/plain）で呼び出します。
  *
@@ -13,14 +14,16 @@
  *  GEMINI_API_KEY          必須
  *  GEMINI_TEXT_MODEL       任意  既定: gemini-2.5-flash
  *  GEMINI_TTS_MODEL        任意  既定: gemini-2.5-flash-preview-tts
- *  GEMINI_THINKING_BUDGET  任意  例: 0（2.5 Flash で思考を止めて高速化。対応しないモデルでは空欄に）
- *  DAILY_GEN_LIMIT         任意  既定: 120（作詞・作曲・演出のリクエスト合計／人・日。1曲で5〜8回程度）
- *  DAILY_TTS_LIMIT         任意  既定: 300（読み上げ音声の生成回数／人・日）
+ *                                さらに節約するなら gemini-2.5-flash-lite
+ *  GEMINI_THINKING_BUDGET  任意  空欄なら 2.5 Flash 系は 0（思考トークンを使わない＝課金を抑える）。
+ *                                思考させたいときは数値、設定を送らないときは auto
+ *  DAILY_GEN_LIMIT         任意  既定: 30（AIでの曲づくり・演出やり直しの回数／人・日。1曲＝1回）
+ *  DAILY_TTS_LIMIT         任意  既定: 200（読み上げ音声の新規生成回数／人・日。キャッシュ再利用は数えない）
  *  APP_URL                 任意  メール本文に載せる公開URL
  *  SPREADSHEET_ID / ROOT_FOLDER_ID / PEPPER  … setup() が自動作成
  */
 
-const APP_VERSION = '1.0.0';
+const APP_VERSION = '1.1.0';
 const SESSION_TTL = 21600; // 6時間（CacheServiceの上限）
 const MAX_FAIL = 5;
 const LOCK_MIN = 15;
@@ -58,7 +61,7 @@ function doPost(e) {
   const routes = {
     register: act_register_, login: act_login_, logout: act_logout_, me: act_me_,
     changePassword: act_changePassword_, forgotPassword: act_forgotPassword_,
-    genLyrics: act_genLyrics_, genMusic: act_genMusic_, genVisual: act_genVisual_, tts: act_tts_,
+    genSong: act_genSong_, genVisual: act_genVisual_, tts: act_tts_,
     saveSong: act_saveSong_, listSongs: act_listSongs_, loadSong: act_loadSong_, deleteSong: act_deleteSong_,
     saveAudio: act_saveAudio_, listMedia: act_listMedia_, getMedia: act_getMedia_, uploadImage: act_uploadImage_,
   };
@@ -198,7 +201,7 @@ function useQuota_(u, kind) {
   const day = today_();
   if (u.usageDate !== day) { u.usageDate = day; u.genCount = '0'; u.ttsCount = '0'; }
   const key = kind === 'tts' ? 'ttsCount' : 'genCount';
-  const limit = Number(prop_(kind === 'tts' ? 'DAILY_TTS_LIMIT' : 'DAILY_GEN_LIMIT')) || (kind === 'tts' ? 300 : 120);
+  const limit = Number(prop_(kind === 'tts' ? 'DAILY_TTS_LIMIT' : 'DAILY_GEN_LIMIT')) || (kind === 'tts' ? 200 : 30);
   const n = Number(u[key]) || 0;
   if (n >= limit) throw new AppError('本日の利用上限に達しました。明日またお試しください', 'LIMIT');
   u[key] = String(n + 1);
@@ -324,14 +327,28 @@ function gemini_(model, body) {
     break;
   }
   console.error('Gemini error: ' + last);
+  const code = Number((/^HTTP (\d+)/.exec(last) || [])[1]) || 0;
+  if (code === 402 || /credits are depleted|billing/i.test(last)) {
+    throw new AppError('AIの利用残高（Gemini APIのクレジット）が不足しています。管理者が Google AI Studio でチャージするまでお待ちください', 'BILLING');
+  }
+  if (code === 400 && /API key/i.test(last) || code === 401 || code === 403) {
+    throw new AppError('AIのAPIキーが無効か、権限がありません。管理者はスクリプトプロパティの GEMINI_API_KEY を確認してください', 'APIKEY');
+  }
+  if (code === 404) {
+    throw new AppError('AIのモデルが見つかりません。管理者はスクリプトプロパティのモデル名（GEMINI_TEXT_MODEL / GEMINI_TTS_MODEL）を確認してください', 'MODEL');
+  }
+  if (code === 429) {
+    throw new AppError('AIの利用が混み合っているか、利用枠の上限に達しました。少し時間をおいて再度お試しください', 'RATE');
+  }
   throw new AppError('AIの呼び出しに失敗しました（' + last.slice(0, 120) + '）。少し待ってから再度お試しください');
 }
 
 function geminiJson_(prompt, temperature) {
   const model = prop_('GEMINI_TEXT_MODEL') || 'gemini-2.5-flash';
-  const gc = { responseMimeType: 'application/json', temperature: temperature == null ? .9 : temperature, maxOutputTokens: 16384 };
+  const gc = { responseMimeType: 'application/json', temperature: temperature == null ? .9 : temperature, maxOutputTokens: 8192 };
   const tb = prop_('GEMINI_THINKING_BUDGET');
-  if (tb !== '' && !isNaN(Number(tb))) gc.thinkingConfig = { thinkingBudget: Number(tb) };
+  if (tb !== '' && tb !== 'auto' && !isNaN(Number(tb))) gc.thinkingConfig = { thinkingBudget: Number(tb) };
+  else if (tb === '' && /^gemini-2\.5-flash/.test(model)) gc.thinkingConfig = { thinkingBudget: 0 }; // 思考トークン（課金対象）を使わない
   const res = gemini_(model, { contents: [{ role: 'user', parts: [{ text: prompt }] }], generationConfig: gc });
   const parts = (((res.candidates || [])[0] || {}).content || {}).parts || [];
   const text = parts.filter(p => !p.thought).map(p => p.text || '').join('');
@@ -363,8 +380,8 @@ function cleanSpeech_(t) {
     .map(x => (/[。、！？!?…」』〜ー]$/.test(x) ? x : x + '。')).join('\n').trim();
 }
 
-/* ============ 作詞・構成 ============ */
-function act_genLyrics_(req) {
+/* ============ 曲づくり（1回のAI呼び出しで 作詞・構成・コード・演出 をまとめて作る） ============ */
+function act_genSong_(req) {
   const u = auth_(req, true);
   useQuota_(u, 'gen');
   const i = req.input || {};
@@ -373,134 +390,59 @@ function act_genLyrics_(req) {
     theme: str_(i.theme, 300), voiceRef: str_(i.voiceRef, 300), songRef: str_(i.songRef, 300), feelings: str_(i.feelings, 1000),
   };
   if (!input.genre) throw new AppError('ジャンルを指定してください');
-  const styleList = Object.keys(STYLE_KEYS).map(k => k + '（' + STYLE_KEYS[k] + '）').join(', ');
+  if (!input.theme && !input.feelings) throw new AppError('テーマか、歌詞にしたい気持ちを入力してください');
+  const styleList = Object.keys(STYLE_KEYS).join(', ');
+  // 出力トークンを減らすため、指示は短く、出力はコード進行までに絞る（メロディはブラウザで作曲）
   const prompt = [
-    'あなたはプロの作詞家・音楽プロデューサーです。次の条件で、約3分のオリジナル曲の「作詞と曲の構成」を作ってください。',
+    'プロの作詞家・編曲家・MV演出家として、約3分のオリジナル曲を作り、JSONだけを出力してください。',
+    'ジャンル: ' + input.genre,
+    'テーマ: ' + (input.theme || '気持ちから考える'),
+    '声のイメージ: ' + (input.voiceRef || '指定なし'),
+    '曲風: ' + (input.songRef || '指定なし'),
+    '歌詞にしたい気持ち: ' + (input.feelings || 'テーマから考える'),
     '',
-    '【条件】',
-    '- ジャンル: ' + input.genre,
-    '- テーマ: ' + (input.theme || '（指定なし。気持ちから考える）'),
-    '- 声のイメージ（歌手の雰囲気の参考）: ' + (input.voiceRef || '（指定なし）'),
-    '- 曲風の参考: ' + (input.songRef || '（指定なし）'),
-    '- 歌詞にしたい気持ち: ' + (input.feelings || '（指定なし。テーマから考える）'),
+    'ルール:',
+    '- 歌詞は完全オリジナル。既存曲の歌詞・フレーズ・タイトルを使わない。参考の歌手名・曲名は雰囲気の参考のみで、歌詞やタイトルに入れない。',
+    '- 歌詞は日本語。1行8〜16音。Aメロ・Bメロ各4行、サビ4〜6行。見出しや（くり返し）などの記号・指示は入れない。',
+    '- pattern は intro, A, B, S(サビ), C(大サビ), interlude, outro。同じ pattern は同じ bars（4の倍数で4〜16）。歌詞は登場ごとに変えてよい。intro/interlude/outro の lyrics は []。',
+    '- label は全て異なる日本語の区間名（イントロ, Aメロ1, サビ1, 間奏, ラストサビ, アウトロ など）。',
+    '- 全小節数×拍数×60÷bpm が170〜190秒。3拍子のジャンルは timeSig "3/4"、他は "4/4"。',
+    '- styleKey: ' + styleList + ' から1つ' + (input.styleHint ? '（第一候補 ' + input.styleHint + '）' : '') + '。',
+    '- voice: ' + VOICE_DESC + ' から声のイメージに近いもの1つ（名前のみ）。',
+    '- chords: pattern ごとに bars と同じ数。1要素1小節、1小節2コードは "F G"。一般的な表記のみ（C, Am, G7, Fmaj7, Dm7, Bm7b5, Csus4, C/E など）。ジャンルらしい進行にし、既存曲の丸写しはしない。',
+    '- narration: 読み上げる本文だけ（見出し・「〜で読み上げて」等の指示・カッコ書き・絵文字なし）。intro は曲紹介2〜3文、outro は締め1文。',
+    '- scenes: arrangement と同じ数・順番・label。テーマに合う実在の場所と正確な座標、altitude 200〜20000、heading 0〜359、tilt 30〜80、motion は 周回/接近/上昇/横移動/固定、description は1文。',
     '',
-    '【守ること】',
-    '- 歌詞は完全なオリジナル。既存の曲の歌詞・フレーズ・タイトルを引用したり、言い換えて再現したりしない。',
-    '- 参考の歌手名・曲名は、声の質感・言葉づかい・テンポ感など大まかな雰囲気の参考にだけ使う。歌詞やタイトルに歌手名・曲名を入れない。',
-    '- 歌詞は日本語。ジャンルに合えば英語やスペイン語の短い掛け声を少し混ぜてもよい。',
-    '- 歌詞の各行は8〜16音程度。Aメロ・Bメロは各4行前後、サビは4〜6行。歌詞に見出し・記号・演出指示（［サビ］、（くり返し）など）を入れない。',
-    '- 構成は pattern 記号 intro, A, B, S, C, interlude, outro を並べる（Sはサビ、Cは大サビ・展開部）。同じ記号は同じ伴奏とメロディを使い回し、歌詞は登場ごとに変えてよい。',
-    '- 同じ pattern 記号は必ず同じ bars（小節数、4の倍数で4〜16）にする。intro/interlude/outro の lyrics は空配列。',
-    '- 曲の長さ（秒）= 全小節数 × 1小節の拍数 × 60 ÷ bpm が170〜190秒になるようにする。',
-    '- label は日本語の区間名（例: イントロ, Aメロ1, Bメロ1, サビ1, 間奏, Aメロ2, サビ2, 大サビ, ラストサビ, アウトロ）。label はすべて異なる名前にする。',
-    '- styleKey は次から最も近いものを1つ: ' + styleList + (input.styleHint ? '（第一候補: ' + input.styleHint + '）' : ''),
-    '- voice は読み上げ用の声を次から声のイメージに最も近いものを1つ: ' + VOICE_DESC,
-    '- ワルツなど3拍子のジャンルは timeSig を "3/4"、それ以外は "4/4"。',
-    '- palette は曲の雰囲気に合う色を3つ（#RRGGBB）。',
-    '',
-    '【出力】次の形のJSONだけを出力する。',
-    '{"title":"曲名","concept":"曲のコンセプトを1文","styleKey":"","bpm":120,"timeSig":"4/4","key":"Am","voice":"","vocalImage":"声の特徴を1文","palette":["#RRGGBB","#RRGGBB","#RRGGBB"],',
-    '"arrangement":[{"pattern":"intro","label":"イントロ","bars":8,"lyrics":[]},{"pattern":"A","label":"Aメロ1","bars":16,"lyrics":["…","…"]}]}',
+    '{"title":"","concept":"1文","styleKey":"","bpm":120,"timeSig":"4/4","key":"Am","voice":"","palette":["#RRGGBB","#RRGGBB","#RRGGBB"],',
+    '"arrangement":[{"pattern":"intro","label":"イントロ","bars":8,"lyrics":[]},{"pattern":"A","label":"Aメロ1","bars":16,"lyrics":["…"]}],',
+    '"chords":{"intro":["Am","F G"],"A":["…"]},',
+    '"narration":{"intro":"","outro":""},',
+    '"scenes":[{"label":"イントロ","description":"","place":"","lat":0,"lng":0,"altitude":1500,"heading":0,"tilt":60,"motion":"周回"}]}',
   ].join('\n');
   const j = geminiJson_(prompt, 1.0);
-  if (!j || !Array.isArray(j.arrangement)) throw new AppError('曲の構成をうまく作れませんでした。もう一度お試しください');
+  if (!j || !Array.isArray(j.arrangement)) throw new AppError('曲をうまく作れませんでした。もう一度お試しください');
   if (VOICES.indexOf(j.voice) < 0) j.voice = 'Kore';
   if (!STYLE_KEYS[j.styleKey]) j.styleKey = input.styleHint || 'reiwa';
   j.arrangement.forEach(a => { if (Array.isArray(a.lyrics)) a.lyrics = a.lyrics.map(l => cleanLyricLine_(l)).filter(Boolean); });
-  return { song: j };
+  const patterns = {};
+  const src = j.chords || {};
+  Object.keys(src).slice(0, 12).forEach(k => {
+    if (Array.isArray(src[k])) patterns[str_(k, 20)] = { chords: src[k].slice(0, 32).map(c => str_(c, 24)) };
+  });
+  const v = visualFrom_(j);
+  return {
+    song: {
+      title: str_(j.title, 60), concept: str_(j.concept, 200), styleKey: j.styleKey, bpm: j.bpm, timeSig: j.timeSig, key: str_(j.key, 6),
+      voice: j.voice, arrangement: j.arrangement, patterns, narration: v.narration, scenes: v.scenes,
+      palette: v.palette.length ? v.palette : (Array.isArray(j.palette) ? j.palette : []).filter(c => /^#[0-9a-f]{6}$/i.test(c)).slice(0, 3),
+    },
+  };
 }
 function cleanLyricLine_(l) {
   return String(l || '').replace(/^[\[［【][^\]］】]{0,20}[\]］】]\s*/, '').replace(/[※＊*#＃]/g, '').trim().slice(0, 80);
 }
-
-/* ============ 作曲 ============ */
-function act_genMusic_(req) {
-  const u = auth_(req, true);
-  useQuota_(u, 'gen');
-  const s = req.song || {};
-  const targets = (Array.isArray(req.targets) ? req.targets : []).map(t => str_(t, 20)).filter(Boolean).slice(0, 4);
-  const pats = (Array.isArray(s.patterns) ? s.patterns : []).slice(0, 12).map(p => ({
-    key: str_(p.key, 20), label: str_(p.label, 30), bars: Math.max(2, Math.min(32, parseInt(p.bars, 10) || 8)),
-    lyrics: (Array.isArray(p.lyrics) ? p.lyrics : []).slice(0, 12).map(l => str_(l, 80)),
-  }));
-  if (!targets.length || !pats.length) throw new AppError('作曲する部分が指定されていません');
-  const beats = String(s.timeSig) === '3/4' ? 3 : 4;
-  const style = STYLE_KEYS[s.styleKey] || str_(s.genre, 40);
-  const want = targets.map(t => { const p = pats.find(x => x.key === t); return p ? '"' + t + '": chords と melody をそれぞれ ' + p.bars + ' 個' : ''; }).filter(Boolean);
-  const prompt = [
-    'あなたは作曲家・編曲家です。次の曲の一部のパターンについて、コード進行とメロディを作ってください。',
-    '',
-    '曲名: ' + str_(s.title, 60),
-    'コンセプト: ' + str_(s.concept, 200),
-    'ジャンル: ' + str_(s.genre, 40) + '（伴奏スタイル: ' + style + '）',
-    'キー: ' + str_(s.key, 6) + '／拍子: ' + beats + '/4／テンポ: ' + (parseInt(s.bpm, 10) || 120),
-    '',
-    '曲全体のパターン（参考。同じ曲として統一感を持たせる）:',
-    pats.map(p => '- ' + p.key + '（' + p.label + '、' + p.bars + '小節） 歌詞: ' + (p.lyrics.length ? p.lyrics.join(' / ') : 'なし（楽器のみ）')).join('\n'),
-    '',
-    '今回作るパターン: ' + targets.join(', '),
-    '',
-    '【ルール】',
-    '- chords: 配列の1要素が1小節。1小節に2つのコードを入れるときは "F G" のように半角スペースで区切る。',
-    '  表記は C, Am, G7, Fmaj7, Dm7, E7, Bm7b5, Csus4, Cdim, Caug, C6, C/E など一般的なものだけ。',
-    '- melody: 配列の1要素が1小節。「音名オクターブ:拍数」を半角スペースで区切る（例 "E4:1 G4:0.5 A4:0.5 C5:2"）。休符は "R:拍数"。',
-    '  各小節の拍数の合計は必ず ' + beats + '。音域は C4〜A5。シャープは #、フラットは b（例 F#4, Bb4）。',
-    '- 歌詞のある部分は、歌詞の音数に合う自然なリズムと抑揚にする。サビ(S)は高めの音域で覚えやすく印象的に。',
-    '- intro/interlude/outro は楽器のテーマ（サビのモチーフを生かす）。outro の最後の小節は主音で終える。',
-    '- キー ' + str_(s.key, 6) + ' を基本に、ジャンルらしい進行にする（例: 昭和歌謡なら哀愁のある短調、ジャズなら ii-V-I、ロカビリーならブルース進行、ボサノバ系ならテンションコード）。',
-    '- 既存曲のメロディやコード進行を丸写ししない。',
-    '- 要素数: ' + want.join('、'),
-    '',
-    '【出力】次の形のJSONだけを出力する。',
-    '{"patterns":{"' + targets[0] + '":{"chords":["Am","F G"],"melody":["A4:1 C5:1 E5:2","D5:2 C5:1 B4:1"]}}}',
-  ].join('\n');
-  const j = geminiJson_(prompt, .8);
-  const out = {};
-  const src = (j && j.patterns) || j || {};
-  targets.forEach(t => {
-    const p = src[t];
-    if (p && (Array.isArray(p.chords) || Array.isArray(p.melody))) {
-      out[t] = {
-        chords: (p.chords || []).slice(0, 32).map(c => str_(c, 24)),
-        melody: (p.melody || []).slice(0, 32).map(m => str_(m, 200)),
-      };
-    }
-  });
-  if (!Object.keys(out).length) throw new AppError('作曲の結果をうまく読み取れませんでした。もう一度お試しください');
-  return { patterns: out };
-}
-
-/* ============ 演出・ナレーション ============ */
-function act_genVisual_(req) {
-  const u = auth_(req, true);
-  useQuota_(u, 'gen');
-  const s = req.song || {};
-  const secs = (Array.isArray(s.sections) ? s.sections : []).slice(0, 24).map(x => ({ label: str_(x.label, 30), kind: str_(x.kind, 10), first: str_(x.first, 80) }));
-  const prompt = [
-    'あなたはミュージックビデオの演出家です。次の曲の、曲紹介ナレーションと、Google Earth Studio で作る背景映像の撮影プランを作ってください。',
-    '',
-    '曲名: ' + str_(s.title, 60),
-    'コンセプト: ' + str_(s.concept, 200),
-    'ジャンル: ' + str_(s.genre, 40),
-    'テーマ: ' + str_(s.theme, 300),
-    '区間: ',
-    secs.map(x => '- ' + x.label + (x.first ? '（歌い出し: ' + x.first + '）' : '（楽器のみ）')).join('\n'),
-    '',
-    '【ナレーションのルール】',
-    '- 読み上げる本文だけを書く。「ナレーション：」などの見出し、「〜で読み上げてください」「〜な声で」などの指示、カッコ書きの演出指示、絵文字、記号は入れない。',
-    '- intro は曲の紹介で2〜3文（60〜110文字）。最後に曲名を自然に紹介する。outro は締めのひとこと1〜2文（20〜60文字）。',
-    '',
-    '【撮影プランのルール】',
-    '- scenes は上の区間と同じ数・同じ順番・同じ label にする。',
-    '- 曲のテーマや情景に合う実在の場所を選び、lat/lng は正確な座標（小数）。altitude はカメラの高度（メートル、200〜20000）。',
-    '- heading はカメラの向き（0〜359度）、tilt は傾き（0=真下、90=水平。30〜80）。',
-    '- motion は 周回 / 接近 / 上昇 / 横移動 / 固定 のいずれか。サビは動きのある絵、間奏やアウトロは広い引きの絵にする。',
-    '- description は映像のイメージを1文で。',
-    '',
-    '【出力】次の形のJSONだけを出力する。',
-    '{"narration":{"intro":"…","outro":"…"},"scenes":[{"label":"イントロ","description":"…","place":"…","lat":35.0,"lng":139.0,"altitude":1500,"heading":0,"tilt":65,"motion":"周回"}],"palette":["#RRGGBB","#RRGGBB","#RRGGBB"]}',
-  ].join('\n');
-  const j = geminiJson_(prompt, .9) || {};
+function visualFrom_(j) {
+  j = j || {};
   const n = j.narration || {};
   return {
     narration: { intro: cleanSpeech_(n.intro).slice(0, 300), outro: cleanSpeech_(n.outro).slice(0, 200) },
@@ -513,15 +455,55 @@ function act_genVisual_(req) {
   };
 }
 
-/* ============ 読み上げ（Gemini TTS） ============ */
+/* ============ 演出・ナレーションのやり直し（任意・1回） ============ */
+function act_genVisual_(req) {
+  const u = auth_(req, true);
+  useQuota_(u, 'gen');
+  const s = req.song || {};
+  const secs = (Array.isArray(s.sections) ? s.sections : []).slice(0, 24).map(x => ({ label: str_(x.label, 30), first: str_(x.first, 60) }));
+  const prompt = [
+    'MV演出家として、次の曲の曲紹介ナレーションと Google Earth Studio 用の撮影プランをJSONだけで出力してください。',
+    '曲名: ' + str_(s.title, 60) + '／コンセプト: ' + str_(s.concept, 200) + '／ジャンル: ' + str_(s.genre, 40) + '／テーマ: ' + str_(s.theme, 300),
+    '区間: ' + secs.map(x => x.label + (x.first ? '（' + x.first + '）' : '')).join('、'),
+    'ルール:',
+    '- narration は読み上げる本文だけ（見出し・「〜で読み上げて」等の指示・カッコ書き・絵文字なし）。intro は曲紹介2〜3文、outro は締め1文。',
+    '- scenes は区間と同じ数・順番・label。テーマに合う実在の場所と正確な座標、altitude 200〜20000、heading 0〜359、tilt 30〜80、motion は 周回/接近/上昇/横移動/固定、description は1文。',
+    '{"narration":{"intro":"","outro":""},"scenes":[{"label":"","description":"","place":"","lat":0,"lng":0,"altitude":1500,"heading":0,"tilt":60,"motion":"周回"}],"palette":["#RRGGBB","#RRGGBB","#RRGGBB"]}',
+  ].join('\n');
+  return visualFrom_(geminiJson_(prompt, .9));
+}
+
+/* ============ 読み上げ（Gemini TTS）＋キャッシュ ============ */
+function ttsCacheFolder_() {
+  const p = PropertiesService.getScriptProperties();
+  const id = p.getProperty('TTS_CACHE_FOLDER_ID');
+  if (id) { try { return DriveApp.getFolderById(id); } catch (e) { /* 作り直す */ } }
+  const f = DriveApp.getFolderById(prop_('ROOT_FOLDER_ID')).createFolder('tts_cache');
+  p.setProperty('TTS_CACHE_FOLDER_ID', f.getId());
+  return f;
+}
+
 function act_tts_(req) {
   const u = auth_(req, true);
-  useQuota_(u, 'tts');
   let text = cleanSpeech_(req.text);
   if (!text) throw new AppError('読み上げる文章がありません');
   if (text.length > 1500) text = text.slice(0, 1500);
   const voice = VOICES.indexOf(req.voice) >= 0 ? req.voice : 'Kore';
   const model = prop_('GEMINI_TTS_MODEL') || 'gemini-2.5-flash-preview-tts';
+
+  // 同じモデル・声・文章の音声は、ドライブに保存したものを再利用（Geminiを呼ばない）
+  const key = hex_(Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, model + '|' + voice + '|' + text, Utilities.Charset.UTF_8)).slice(0, 40);
+  let folder = null;
+  try {
+    folder = ttsCacheFolder_();
+    const it = folder.getFilesByName(key + '.b64');
+    if (it.hasNext()) {
+      const f = it.next();
+      return { audio: f.getBlob().getDataAsString(), rate: Number(f.getDescription()) || 24000, cached: true };
+    }
+  } catch (e) { console.warn('TTSキャッシュ読込失敗: ' + e); }
+
+  useQuota_(u, 'tts'); // 新規生成のときだけ回数を数える
   // 指示文を一切付けず、本文だけを渡す（冒頭に「〜で読み上げて」等が入らないように）
   const body = {
     contents: [{ role: 'user', parts: [{ text: text }] }],
@@ -533,7 +515,9 @@ function act_tts_(req) {
     const a = parts.find(p => p.inlineData && p.inlineData.data);
     if (a) {
       const m = /rate=(\d+)/.exec(a.inlineData.mimeType || '');
-      return { audio: a.inlineData.data, rate: m ? Number(m[1]) : 24000 };
+      const rate = m ? Number(m[1]) : 24000;
+      if (folder) { try { folder.createFile(key + '.b64', a.inlineData.data, 'text/plain').setDescription(String(rate)); } catch (e) { console.warn('TTSキャッシュ保存失敗: ' + e); } }
+      return { audio: a.inlineData.data, rate: rate, cached: false };
     }
   }
   throw new AppError('音声を作れませんでした。歌詞を少し短くして再度お試しください');

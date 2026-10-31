@@ -7,7 +7,7 @@
  */
 window.APP_CONFIG = {
   APP_NAME: 'うたつくる',
-  VERSION: 'v1.0.0',
+  VERSION: 'v1.1.0',
 
   // GASウェブアプリのURL（.../exec で終わるもの）
   GAS_URL: 'https://script.google.com/macros/s/AKfycbwra9mFXy2uc5zccA3FI06rDF5nEr2Y8buCIVshyEA-wIzfP425qakrvccAz-DQ9Wlr/exec',
@@ -22,7 +22,6 @@ window.APP_CONFIG = {
   SPEECH_LANG: 'ja-JP',
   SPEECH_SILENCE_SEC: 10, // 無音がこの秒数続いたら自動で聞き取り終了（設定画面で変更可）
 
-  // 同時に投げるリクエスト数（GASの負荷に合わせて調整）
-  MUSIC_PARALLEL: 3,
+  // 読み上げ音声を同時に作る数（GASの負荷に合わせて調整）
   TTS_PARALLEL: 2,
 };

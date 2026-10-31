@@ -1,5 +1,5 @@
 /*!
- * うたつくる app.js v1.0.0
+ * うたつくる app.js v1.1.0（Gemini消費削減：1曲＝AI1回、作曲はブラウザ内）
  * 会員認証 / 曲づくり（Gemini）/ ステージ再生 / 歌詞の声（Gemini TTS）/ 書き出し / マイソング
  */
 (function () {
@@ -409,16 +409,22 @@
     await busy($('#btnGenerate'), 'つくっています', async () => {
       let step = 'lyrics';
       try {
+        // AI呼び出しはこの1回だけ（作詞・構成・コード進行・演出・ナレーション）
         setProgress('lyrics');
-        const r1 = await api('genLyrics', { input });
-        const song = E.normalizeStructure(Object.assign({}, r1.song, { input, genre: input.genre }));
+        const r = await api('genSong', { input });
+        const g = r.song || {};
+        const song = E.normalizeStructure(Object.assign({}, g, { input, genre: input.genre }));
         if (input.voice && input.voice !== 'auto') song.voice = input.voice;
         if (!VOICES.some(v => v[0] === song.voice)) song.voice = 'Kore';
+        // 作曲（メロディ）はブラウザ内で行う＝AIを使わない
         step = 'music'; setProgress('music');
-        song.patterns = await composeMusic(song);
+        song.patterns = g.patterns || {};
+        E.composeMelody(song);
         E.finalize(song, CFG.TARGET_SECONDS || 180);
         step = 'visual'; setProgress('visual');
-        await directVisual(song);
+        song.narration = g.narration || {};
+        song.scenes = Array.isArray(g.scenes) ? g.scenes : [];
+        if (Array.isArray(g.palette) && g.palette.length) song.palette = g.palette;
         setProgress('done');
         setSong(song, null, null);
         toast('「' + song.title + '」ができました。ステージで聴いてみましょう。', 'ok');
@@ -430,35 +436,12 @@
     });
   }
 
-  async function composeMusic(song) {
-    const pats = [], seen = {};
-    song.arrangement.forEach(s => {
-      if (seen[s.pattern]) return;
-      seen[s.pattern] = 1;
-      pats.push({ key: s.pattern, label: s.label, bars: s.bars, lyrics: s.lyrics });
-    });
-    // 1回のリクエストを小さくしてGASのタイムアウトを避ける
-    const groups = []; let cur = [], curBars = 0;
-    pats.forEach(p => {
-      if (cur.length && (cur.length >= 2 || curBars + p.bars > 32)) { groups.push(cur); cur = []; curBars = 0; }
-      cur.push(p.key); curBars += p.bars;
-    });
-    if (cur.length) groups.push(cur);
-    const base = { title: song.title, concept: song.concept || '', key: song.key, bpm: song.bpm, timeSig: song.timeSig, styleKey: song.styleKey, genre: song.genre, patterns: pats };
-    const out = {};
-    await pool(groups, CFG.MUSIC_PARALLEL || 3, async keys => {
-      const r = await api('genMusic', { song: base, targets: keys });
-      Object.assign(out, r.patterns || {});
-    });
-    return out;
-  }
-
   async function directVisual(song) {
     try {
       const r = await api('genVisual', {
         song: {
           title: song.title, concept: song.concept || '', genre: song.genre, theme: (song.input || {}).theme || '',
-          sections: song.arrangement.map(s => ({ label: s.label, kind: E.kindOf(s.pattern), first: s.lyrics[0] || '' })),
+          sections: song.arrangement.map(s => ({ label: s.label, first: s.lyrics[0] || '' })),
         },
       });
       song.narration = r.narration || {};
@@ -501,9 +484,9 @@
         <div class="actions">
           <button type="button" class="btn primary" data-act="stage">ステージで聴く</button>
           <button type="button" class="btn" data-act="save">${state.songId ? '上書き保存' : '保存する'}</button>
-          <button type="button" class="btn ghost" data-act="remusic">作曲をやり直す</button>
-          <button type="button" class="btn ghost" data-act="revisual">演出をやり直す</button>
-          <button type="button" class="btn ghost" data-act="reall">歌詞からやり直す</button>
+          <button type="button" class="btn ghost" data-act="remusic" title="AIを使わないので何度でも無料です">メロディを作り直す</button>
+          <button type="button" class="btn ghost" data-act="revisual" title="AIを1回使います">演出をやり直す</button>
+          <button type="button" class="btn ghost" data-act="reall" title="AIを1回使います">歌詞からやり直す</button>
         </div>
       </div>
       <div class="secs">
@@ -534,18 +517,20 @@
       const act = b.dataset.act;
       if (act === 'stage') go('stage');
       if (act === 'save') busy(b, '保存しています', () => saveSong());
-      if (act === 'remusic') busy(b, '作曲しています', async () => {
-        state.song.patterns = await composeMusic(state.song);
-        E.finalize(state.song, CFG.TARGET_SECONDS || 180);
+      if (act === 'remusic') {
+        // ブラウザ内の作曲なのでAIの消費なし。歌詞の声（読み上げ）はそのまま使えます
+        E.composeMelody(state.song);
         player.reset(); renderResult(); saveDraft();
-        toast('作曲をやり直しました', 'ok');
-      });
-      if (act === 'revisual') busy(b, '演出を考えています', async () => {
+        toast('メロディを作り直しました', 'ok');
+      }
+      if (act === 'revisual' && confirm('演出とナレーションをAIで作り直します（AIを1回使います）。よろしいですか？')) busy(b, '演出を考えています', async () => {
         await directVisual(state.song);
         player.reset(); renderResult(); saveDraft();
         toast('演出とナレーションを作り直しました', 'ok');
       });
-      if (act === 'reall') { fillInput(state.song.input); window.scrollTo({ top: 0, behavior: 'smooth' }); generate(state.song.input); }
+      if (act === 'reall') {
+        if (!confirm('歌詞から作り直します（AIを1回使います）。今の歌詞は置き換わります。よろしいですか？')) return;
+        fillInput(state.song.input); window.scrollTo({ top: 0, behavior: 'smooth' }); generate(state.song.input); }
     });
   }
 
@@ -670,18 +655,19 @@
     const n = song.narration || {};
     add(cleanSpeech(n.intro)); add(cleanSpeech(n.outro));
     if (!jobs.length) { toast('声はすべてできています', 'ok'); return; }
-    let done = 0;
+    let done = 0, reused = 0;
     const st = $('#ttsStatus');
     st.textContent = `0 / ${jobs.length} 件`;
     await busy($('#btnTts'), '声をつくっています', async () => {
       await pool(jobs, CFG.TTS_PARALLEL || 2, async j => {
         const r = await api('tts', { text: j.txt, voice: v });
         clipCache.set(j.k, E.b64ToClip(r.audio, r.rate || 24000));
+        if (r.cached) reused++;
         done++; st.textContent = `${done} / ${jobs.length} 件`;
       });
       player.invalidate();
       voiceStatus();
-      toast('歌詞の声ができました。再生すると曲に重なります。', 'ok');
+      toast('歌詞の声ができました' + (reused ? `（${reused}件は保存済みの声を再利用し、AIは使っていません）` : '') + '。再生すると曲に重なります。', 'ok');
     });
     voiceStatus();
   }
@@ -989,7 +975,8 @@
     const tl = player.timeline(); if (!tl) return [];
     const sc = (state.song.scenes || []);
     return tl.sections.map((s, i) => {
-      const x = sc.find(v => v && v.label === s.label) || sc[i] || {};
+      const base = s.label.replace(/（くり返し）$/, '');
+      const x = sc.find(v => v && v.label === s.label) || sc.find(v => v && v.label === base) || sc[i] || {};
       return {
         label: s.label, start: s.start, end: s.end, place: x.place || '', desc: x.description || '',
         lat: num(x.lat, null), lng: num(x.lng, null), alt: Math.round(num(x.altitude, 1500)),

@@ -1,5 +1,5 @@
 /*!
- * うたつくる 音楽エンジン engine.js v1.0.0
+ * うたつくる 音楽エンジン engine.js v1.1.0
  * Web Audio API だけで、ジャンル別の伴奏・ドラム・メロディと、
  * Gemini TTS の読み上げ音声（歌詞の声・ナレーション）をミックスします。
  * リアルタイム再生と、高速なオフライン書き出し（WAV）の両方に対応。
@@ -271,6 +271,179 @@
     const total = notes.reduce((a, n) => a + n.dur, 0);
     if (Math.abs(total - beats) > .01) { const k = beats / total; notes.forEach(n => n.dur *= k); }
     return notes;
+  }
+
+  /* ===== ブラウザ内の作曲（AIを使わずにメロディを作る） ===== */
+  function rng(seed) {
+    let a = seed >>> 0;
+    return () => {
+      a = (a + 0x6D2B79F5) | 0;
+      let t = Math.imul(a ^ (a >>> 15), 1 | a);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+  /* 歌詞1行のおおよその音数（拍） */
+  function moraCount(s) {
+    const t = String(s || '').replace(/[\s、。！？!?,.・「」『』（）()…〜~]/g, '');
+    let n = 0;
+    for (const ch of t) {
+      if (/[ゃゅょぁぃぅぇぉャュョァィゥェォ]/.test(ch)) continue;
+      if (/[\u4e00-\u9fff々]/.test(ch)) n += 2;
+      else if (/[A-Za-z]/.test(ch)) n += .5;
+      else n += 1;
+    }
+    return Math.round(n);
+  }
+  function keyInfo(key) {
+    const m = /^([A-G][#b]?)(m(?!aj))?/.exec(String(key || 'C').trim());
+    const root = m ? pcOf(m[1]) : 0;
+    return { root: root == null ? 0 : root, minor: !!(m && m[2]) };
+  }
+  function scaleNotes(ki, lo, hi) {
+    const iv = ki.minor ? [0, 2, 3, 5, 7, 8, 10] : [0, 2, 4, 5, 7, 9, 11];
+    const out = [];
+    for (let m = lo; m <= hi; m++) if (iv.includes(((m - ki.root) % 12 + 12) % 12)) out.push(m);
+    return out;
+  }
+  function snapChord(scale, idx, chord, rootOnly) {
+    const pcs = rootOnly ? [chord.root] : chord.iv.map(i => (chord.root + i) % 12);
+    for (let d = 0; d < 7; d++) {
+      for (const s of [idx - d, idx + d]) if (s >= 0 && s < scale.length && pcs.includes(scale[s] % 12)) return s;
+    }
+    return idx;
+  }
+  const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+  const noteName = m => NOTE_NAMES[m % 12] + (Math.floor(m / 12) - 1);
+  const rnd3 = x => +x.toFixed(3);
+
+  function makeRhythm(syl, span, R, beats) {
+    const avail = span - (span >= beats * 2 ? 1.5 : 1);
+    const unit = syl <= avail * .7 ? 1 : syl * .5 <= avail ? .5 : .25;
+    const durs = Array(syl).fill(unit);
+    let slack = avail - syl * unit;
+    // 4分音符中心のときは、ところどころ8分音符にしてリズムに変化をつける
+    if (unit === 1) for (let i = 0; i < syl - 1; i++) if (R() < .35) { durs[i] = .5; slack += .5; }
+    let guard = 0;
+    const step = unit === .25 ? .25 : .5;
+    while (slack >= step && guard++ < 80 && syl > 1) {
+      const i = Math.floor(R() * (syl - 1));
+      if (durs[i] < 2) { durs[i] += step; slack -= step; }
+    }
+    const ext = Math.max(0, Math.min(slack, 2));
+    durs[syl - 1] += ext; slack -= ext;
+    let off = (R() < .3 && slack >= .5) ? .5 : 0;
+    return durs.map(d => { const o = { off, dur: d }; off += d; return o; });
+  }
+
+  function toBars(events, n, beats) {
+    const bars = [];
+    for (let b = 0; b < n; b++) {
+      const s = b * beats, e = s + beats;
+      let pos = s;
+      const toks = [];
+      events.filter(ev => ev.start < e - 1e-6 && ev.start + ev.dur > s + 1e-6).sort((x, y) => x.start - y.start).forEach(ev => {
+        const st = Math.max(ev.start, s, pos), en = Math.min(ev.start + ev.dur, e);
+        if (en <= st + 1e-6) return;
+        if (st > pos + 1e-6) toks.push('R:' + rnd3(st - pos));
+        toks.push((ev.midi == null ? 'R' : noteName(ev.midi)) + ':' + rnd3(en - st));
+        pos = en;
+      });
+      if (pos < e - 1e-6) toks.push('R:' + rnd3(e - pos));
+      bars.push(toks.join(' '));
+    }
+    return bars;
+  }
+
+  /* 歌詞の音数・コード・キーからメロディを作る（同じseedなら同じ曲） */
+  function composeMelody(song, seed) {
+    const st = STYLES[song.styleKey] || STYLES.reiwa, beats = st.beats;
+    const ki = keyInfo(song.key);
+    if (seed == null) seed = (Date.now() ^ Math.floor(Math.random() * 1e9)) >>> 0;
+    song.melodySeed = seed;
+    const R = rng(seed);
+    const firstOf = {};
+    song.arrangement.forEach(s => { if (!firstOf[s.pattern]) firstOf[s.pattern] = s; });
+    song.patterns = song.patterns || {};
+    const tonic = parseChord(song.key) ? song.key : 'C';
+    const motifs = beats === 3
+      ? [[1, 1, 1], [1.5, .5, 1], [2, 1], [1, 2]]
+      : [[1, .5, .5, 1, 1], [.5, .5, 1, .5, .5, 1], [1.5, .5, 2], [1, 1, 2], [.5, .5, .5, .5, 2]];
+
+    Object.keys(firstOf).forEach(p => {
+      const sec = firstOf[p], n = sec.bars;
+      const pat = song.patterns[p] || (song.patterns[p] = {});
+      let ch = Array.isArray(pat.chords) ? pat.chords.map(String).filter(x => x.trim()) : [];
+      if (!ch.length) ch = [tonic];
+      const cb = ch.slice();
+      while (ch.length < n) ch.push(cb[ch.length % cb.length]);
+      pat.chords = ch.slice(0, n);
+
+      const kind = kindOf(p);
+      const range = kind === 'chorus' ? [64, 81] : kind === 'inst' ? [62, 79] : [57, 76];
+      const scale = scaleNotes(ki, range[0], range[1]);
+      const chordAt = (bar, bt) => {
+        const cs = splitChords(pat.chords[Math.min(n - 1, bar)]);
+        const list = cs.length ? cs : [parseChord(tonic) || parseChord('C')];
+        return list[Math.min(list.length - 1, Math.floor(bt * list.length / beats))];
+      };
+      const events = [];
+      const center = Math.floor(scale.length / 2) - (kind === 'chorus' ? 0 : 1);
+
+      const motif = (fromBar, toBar, isOutro) => {
+        const ma = motifs[Math.floor(R() * motifs.length)], mb = motifs[Math.floor(R() * motifs.length)];
+        let idx = center;
+        for (let b = fromBar; b < toBar; b++) {
+          if (isOutro && b === toBar - 1) {
+            idx = snapChord(scale, idx, chordAt(b, 0), true);
+            events.push({ start: b * beats, dur: beats, midi: scale[idx] });
+            continue;
+          }
+          let pos = 0;
+          ((b - fromBar) % 2 === 0 ? ma : mb).forEach(d => {
+            idx = Math.max(0, Math.min(scale.length - 1, idx + Math.round((R() - .5) * 4)));
+            if (Math.abs(pos - Math.round(pos)) < 1e-6) idx = snapChord(scale, idx, chordAt(b, pos), false);
+            events.push({ start: b * beats + pos, dur: d, midi: scale[idx] });
+            pos += d;
+          });
+        }
+      };
+
+      let lines = (sec.lyrics || []).filter(x => String(x).trim());
+      while (lines.length > n) { const m = []; for (let i = 0; i < lines.length; i += 2) m.push(lines[i] + (lines[i + 1] || '')); lines = m; }
+
+      if (kind === 'inst' || !lines.length) {
+        motif(0, n, /^outro|アウトロ|エンディング/i.test(p));
+      } else {
+        const bpl = Math.floor(n / lines.length);
+        const rhythmBySyl = {};
+        const amp = kind === 'chorus' ? 4 : kind === 'pre' ? 3 : 2;
+        lines.forEach((line, li) => {
+          const startBeat = li * bpl * beats, span = bpl * beats;
+          const syl = Math.max(3, Math.min(moraCount(line), Math.floor((span - 1) / .25)));
+          const rhythm = rhythmBySyl[syl] || (rhythmBySyl[syl] = makeRhythm(syl, span, R, beats));
+          let idx = snapChord(scale, center + Math.round((R() - .5) * 4), chordAt(li * bpl, 0), false);
+          const base = idx;
+          rhythm.forEach((r, i) => {
+            const abs = startBeat + r.off, bar = Math.floor(abs / beats), bt = abs - bar * beats;
+            const t = rhythm.length > 1 ? i / (rhythm.length - 1) : 0;
+            const target = base + Math.round(amp * Math.sin(Math.PI * Math.min(1, t * 1.1)));
+            let step = Math.sign(target - idx);
+            if (R() < .35) step += R() < .5 ? -1 : 1;
+            if (R() < .18) step = 0;
+            idx = Math.max(0, Math.min(scale.length - 1, idx + step));
+            const strong = Math.abs(bt - Math.round(bt)) < 1e-6 && Math.round(bt) % 2 === 0;
+            const last = i === rhythm.length - 1;
+            if (strong || last) idx = snapChord(scale, idx, chordAt(bar, bt), last && li === lines.length - 1);
+            events.push({ start: abs, dur: r.dur, midi: scale[idx] });
+          });
+        });
+        const used = lines.length * bpl;
+        if (used < n) motif(used, n, false);
+      }
+      pat.melody = toBars(events, n, beats);
+    });
+    return song;
   }
 
   /* ===== 和音の並べ方 ===== */
@@ -613,7 +786,7 @@
   }
 
   global.UtaEngine = {
-    STYLES, parseChord, splitChords, kindOf, normalizeStructure, finalize, buildTimeline,
+    STYLES, parseChord, splitChords, kindOf, normalizeStructure, composeMelody, finalize, buildTimeline,
     createMixer, applyMix, createSession, scheduleEvent, renderOffline, toWav, b64ToClip,
   };
 })(window);

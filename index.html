@@ -332,14 +332,14 @@ footer{text-align:center;padding:1.5rem 1rem 2rem;font-size:.8rem;color:var(--mu
         </label>
         <div class="wide gen-row">
           <button class="btn primary big" id="btnGenerate" type="submit">曲をつくる</button>
-          <span class="small muted">作詞・作曲・演出の順に仕上げます。1〜3分ほどかかります。</span>
+          <span class="small muted">AIで作詞と演出を考え、作曲はブラウザ内で行います。30秒〜1分ほどかかります。</span>
         </div>
       </form>
 
       <ol id="progress" class="progress" hidden aria-live="polite">
-        <li data-step="lyrics">作詞と構成</li>
-        <li data-step="music">作曲</li>
-        <li data-step="visual">演出とナレーション</li>
+        <li data-step="lyrics">AIで作詞・構成・演出</li>
+        <li data-step="music">作曲（ブラウザ内）</li>
+        <li data-step="visual">仕上げ</li>
       </ol>
 
       <div id="result" hidden></div>
@@ -456,7 +456,7 @@ footer{text-align:center;padding:1.5rem 1rem 2rem;font-size:.8rem;color:var(--mu
       <li><b>新規登録</b>：ニックネームとメールアドレスを入れ、注意事項に同意して登録します。仮パスワードがメールで届きます。</li>
       <li><b>ログイン</b>：仮パスワードでログインすると、最初に新しいパスワードへの変更をお願いします。</li>
       <li><b>つくる</b>：ジャンルを選び、テーマ・声のイメージ・曲風・歌詞にしたい気持ちを入れます。マイクのボタンで話して入力もできます。「曲をつくる」を押すと、作詞、作曲、演出の順にAIが仕上げます。</li>
-      <li><b>手直し</b>：できた歌詞はそのまま書き換えられます。「作曲をやり直す」「演出をやり直す」で一部だけ作り直せます。</li>
+      <li><b>手直し</b>：できた歌詞はそのまま書き換えられます。「メロディを作り直す」はAIを使わないので何度でも無料です。「演出をやり直す」「歌詞からやり直す」はAIを1回使います。</li>
       <li><b>ステージ</b>：再生すると歌詞がカラオケのように流れます。「歌詞の声をつくる」を押すと、AIの声が伴奏に重なります。右上のボタンで全画面表示になります。</li>
       <li><b>背景</b>：自動演出のほか、端末の写真・動画や、Google Earth Studio で作った映像を使えます。撮影指示の表をコピーして Earth Studio での制作に使ってください。</li>
       <li><b>保存</b>：「保存する」でマイソングに残ります。完成した音はWAVで書き出したり、ドライブに保存したりできます。</li>
